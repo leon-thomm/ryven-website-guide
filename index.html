@@ -1,0 +1,73 @@
+<!--
+        THIS FILE IS FOR DEVELOPMENT PURPOSES ONLY
+        TO MAKE SURE THE JINJA TEMPLATES WORK WHEN REFERENCING RESOURCES, DEPLOY THIS WEBSITE THROUGH UVICORN WITH main.py
+-->
+
+<!DOCTYPE html>
+<html lang="en" data-theme="theme-dark">
+
+    <head>
+        
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+        
+        <!-- docsify stylesheet -->
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css">
+
+        <!-- CSS -->
+        <link rel="stylesheet" href="style.css">
+        
+      
+    </head>
+
+    <body>
+  
+        <!-- page content -->
+
+        <div class="wrapper">
+            
+            <div id="app"></div>
+            <script>
+                window.$docsify = {
+                    name: '',
+                    repo: '',
+                    homepage: "guide_markdown",
+                    themable: {
+                        readyTransision: true,
+                        responsiveTables: true
+                    },
+                    
+                    // Alerts: flat style
+                    
+                    'flexible-alerts': {
+                        style: 'flat'
+                    }
+                }
+            </script>
+            
+        </div>
+
+
+        <!-- scripts -->
+        
+        <!-- Docsify v4 -->
+        <script src="https://cdn.jsdelivr.net/npm/docsify@4"></script>
+        
+        <!-- docsify-themeable -->
+        <!-- <script src="https://cdn.jsdelivr.net/npm/docsify-themeable@0/dist/js/docsify-themeable.min.js"></script> -->
+        <!-- <script src="//cdn.jsdelivr.net/npm/docsify/lib/plugins/zoom-image.min.js"></script> -->
+        
+        
+        <!-- Python syntax highlighting support -->
+        <script src="https://cdn.jsdelivr.net/npm/prismjs@1.23.0/components/prism-python.js"></script>
+        
+        <!-- copy code plugin -->
+        <script src="//cdn.jsdelivr.net/npm/docsify-copy-code"></script>
+        
+        <!-- Alerts - https://github.com/fzankl/docsify-plugin-flexible-alerts -->
+        <script src="https://unpkg.com/docsify-plugin-flexible-alerts"></script>
+
+    </body>
+
+</html>
