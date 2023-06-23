@@ -1,121 +1,112 @@
-*This guide provides a more in-depth introduction and avoids to re-cover the basics which you can find in the README on github.*
+*This guide provides an in-depth introduction to Ryven and avoids to re-cover the basics which you can find in the README on github. It includes some advanced topics and is mainly directed towards those who intend to develop nodes, which - at the time - is the mayority of users, but that should change eventually.*
 
 <center><img class="docs-logo" src="{{ url_for('img', path='/logo_white.png') }}" style="max-width: 500px" /></center>
 
 ## Project Idea
 
-The Ryven editor is a general purpose visual nodes editor for Python.
+The Ryven editor is a general purpose visual nodes editor for Python. It puts as few contraints on your nodes as possible. This implies mainly three aspects to consider:
 
-## Structure
+1. Your nodes can execute any Python code and can be arbitrarily complex.
+2. The more complicated your node setup the more careful design is required.
+3. Ryven itself doesn't do much, probably less than you expect right now.
 
-The top-level object is always the **Session** representing the whole project. You might never access it directly (but you can!). The session mainly keeps track of the scripts and available nodes.
+Writing simple and stateless nodes, however, is quite easy. See the README on GitHub for a list of features. This guide primarily provides some intuition on how Ryven works internally to equip you with the right tools to develop scalable node packages.
+
+## Basic Internals
+
+*This section gives some intuition on, and specification of the most fundamental concepts that need to be understood before getting into developing nodes further below.*
+
+In Ryven, the top-level object is the **Session** representing the current project. You might never access it directly (but you can!). The session mainly keeps track of the scripts and available nodes.
 
 A **Script** contains
 - a **Flow**
 - a **Logger** and 
 - a **Variables Manager**
 
-<!-- 
+Unlike most other node editors, Ryven supports *data connections* **and** *exec connections*. Data connections transmit data from one node to another, and exec connections only transmit a trigger signal. Pure data flows (only data connections) are like the Unreal Engine Material Editor, while exec flows (some exec connections) are more like the Unreal Engine BluePrints. You can choose the appropriate flow mode (see below) (*data flow* or *exec flow*) for each individual flow in the respective script.
 
-> [!NOTE|label:Macro Scripts]
-> In the past, there have been macro scripts, which you can think of as subgraphs, i.e. graphs that have an input and output node representing parameters and returns, which can be called as nodes (a tiny bit like calling a funciton). Macro scripts do not exist anymore. Reason: it is by far not obvious how exactly they should work, there are many possible implementation with very different tradeoffs. Also, the nodes system is powerful enough to completely implement this functionality as a nodes package, so if you have a specific use case and you need some kind of abstraction like this, you can implement it yourself in a way that fits the use case well. 
+## Flow execution
 
--->
+There are a couple of different modes / algorithms for executing a flow.
 
-Unlike most other node editors, Ryven supports *data connections* **and** *exec connections*. Data connections transmit data from one node to another, and exec connections only transmit a trigger signal. Pure data flows (only data connections) are like the UE4 Material Editor, while exec flows (some exec connections) are more like the UE4 BluePrints. You can choose the appropriate algorithm (*data flow* or *exec flow*) in each individual script.
+### Data Flow
 
-> [!NOTE|label:The Differences in Detail]
-> *If you don't have experience with the flow-based programming idea already you can skip this, these differences don't really matter for now.*
->
-> ### Data Flows
->
-> In a data flow, every change of data (which means that a data output of a node has been changed via `self.set_output_val()` in the node) gets forward propagated and causes an update event in all successor nodes. In the example below, changing the slider value would therefore cause immediate updates and a visible change in the result node on the right.
->
-> <center><img src="{{ url_for('img', path='/data_flow_example.png') }}" style="max-width: 900px" /></center>
->
-> ### Exec Flows
->
-> In execution flows, data isn't forward propagated on change, but generated on request (backwards), only causing update events in affected nodes once the data of an output is requested somewhere (through `self.input()` in a node). In the example above, changing the slider value would not lead to a change in the result node in an exec flow, but if an active node requests this data, like shown below, then the whole expression gets executed.
->
-> <center><img src="{{ url_for('img', path='/exec_flow_example.png') }}" style="max-width: 900px" /></center>
->
-> The data flow paradigm is the more fundamental one, and there might be changes for the exec mode in the future.
->
-> While you can choose the according mode for a flow, it turned out to be a use case too to use the data flow mode in combination with few exec connections. This can lead to performance issues, but is quite powerful if used in the right way. Ultimately, both paradigms are possible. For more precise definitions on the aspects of flow execution, see [ryvencore-qt](https://leon-thomm.github.io/ryvencore-qt/).
+Data is *forward propagated on change*. When a node receives some data at an input, its `update_event()` is executed. This is where the node can start processing data. When new data is generated during that processing, new output values can be pushed with `set_output_value(index, data)` which then causes the new data to be pushed to all successors connected to that indexed output, and again causes an `update_event()` in each respective successor.
 
-## Editor Overview
+In the example below, changing the slider value would therefore cause immediate updates and a visible change in the result node on the right. The `get var` and lower `/` nodes are not recomputed when doing so!
 
-### Running Ryven
+<center><img src="{{ url_for('img', path='/data_flow_example.png') }}" style="max-width: 900px" /></center>
 
-After installing the application, following the instructions on [GitHub](https://github.com/leon-thomm/Ryven), you can run Ryven by running `ryven` on the console, or by opening `Ryven.py` with Python.
+The default flow execution mode is this simple data-flow mode where the flow immediately updates successor nodes when node outputs are set. 
 
-### Flows
+> [!NOTE|label:Assumptions in the data-flow mode]
+> - no non-terminating feedback loops
 
-The flow supports all usual actions, including undo/redo operations. You can place nodes by right-clicking and pan around by right clicking and dragging the scene.
+### Data Flow with Optimization
 
-> [!NOTE]
-> I would like to add sophisticated touch support, but there are Qt bugs that are not being tackled making this difficult, at least with PySide2.
+You might have noticed that this naïve data-flow approach can lead to immense performance issues depending on your nodes' update patterns, and the shape of the graph (especially in case of "diamonds" in the graph). With the simple approach, every time the node calls `self.set_output_val(...)` the successors are updated. To provide a more suitable approach for many scenarios under a slightly tightened assumption, there is an optimized data-flow mode, creatively called *data-flow-opt*.
 
-There are many different themes for the flows, which you can select in the menu at the top of the window. Furthermore, when nodes update, they blink so you can easily see what's going on. There is also a performance mode which you can change to `fast` to significantly simplify the rendering of the components for weaker hardware or large flows. I already introduced some caching, but the performance is usually still not so great in `pretty` mode.
+> [!NOTE|label:Assumptions in the data-flow-opt mode]
+> - no feedback loops
+> - nodes never modify their ports during execution
 
-### Integrated Console
+Notice that while the graph representation naturally makes most types of feedback loops very obvious (because you have a cycle in the graph), not all possible types of feedback loops are visible this way. If some node $A$ causes eventually an update of a successor $B$, which in turn e.g. updates a script variable (explained further below) or even manually updates another node which causes update of $A$, this is semantically still a feedback loop, even though there is no syntactical cycle in the graph. Any kinds of such loops are not allowed here, the flow of data should strictly follow a tree shape.
 
-The small integrated console, located at the bottom of the editor window, simply runs a Python REPL. Additionally, you can right click on a node to add a reference to it to the console scope, so you can directly access the node's whole API at any time. This is quite powerful, you can quickly access internal variables, or perform temporary modifications on the node (like adding/removing inputs/outputs), etc., you have full control (and responsibility) there.
+> [!TIP|label:How it works]
+> Whenever a new execution is invoked somewhere (some node or output is updated), it analyzes the graph's connected component (of successors) where the execution was invoked and creates a few auxiliary data structures (running in $\mathcal{O}(|V|+|E|)$) to reverse engineer how many input updates every node possibly receives in this execution. A node is updated whenever it receives input, and outputs are propagated only when no input can still receive data from a predecessor node (notice, a predecessor does not need to update all outputs during the update). Therefore, while a node gets updated every time an input receives some data, every *output* is only updated *once*. This implies that every connection is activated at most once during a single execution.
+> 
+> For the case of consecutive flow executions with no changes to the flow structure in between, the auxiliary data structures are cached, causing significant performance improvement.
+> 
+> This can result in asymptotic execution speedup in large data flows compared to normal data flow execution where any two executed branches that merge again in the future will result in two complete executions of the whole subgraph behind the merge.
 
-> [!TIP|label:Session Access]
-> The session object (which is basically the project) is added to the console automatically, so you can type `session` to access it and do pretty much everything from there. You can play around with the `ryvencore-qt` API, for example try creating a new script via `session.create_script('hello there!')`. Due to the fully signals-based communication between `ryvencore` and `ryvencore-qt`, the GUI will react accordingly to most modifications you do in the console.
+### Exec Flows
 
-### Script Variables
+In execution flows, data isn't forward propagated on change, but generated on request (backwards), only causing update events in affected nodes once the data of an output is requested somewhere (through `self.input()` in a node). In the example above, in a flow in exec mode, changing the slider value would not lead to a change in the result node in an exec flow, but if an active node requests this data, like shown below, then the whole expression gets executed. Exec connections behave like data connections in the default data mode.
 
-The script variables, located on the right, can be modified at any time by right-clicking on them, and when you hover over one you can see its current value and data type. The values of those variables are usually accessed and changed by your nodes. The API provides a few very simple but really powerful methods for nodes to register as *variable receivers*. Basically, a node can dynamically register as a receiver for script variables by providing a var name and a method that is supposed to be called whenever a script variable with that name changes (or is created). You can easily build highly sophisticated nodes using this that automatically adapt to change of data from somewhere else.
+<center><img src="{{ url_for('img', path='/exec_flow_example.png') }}" style="max-width: 900px" /></center>
 
-> [!TIP|label:Example]
-> In one of the node packages Ryven comes with, there's a *Matrix* node where you can just type a few numbers into a small textedit and it creates a numpy array out of them. But you can also type in `v('')` and the name of a script variable (instead of a number) which makes the matrix node register as a receiver, so it updates and regenerates the matrix every time the value of a script variable with that name changed. You can see this in action in the big screenshot above. In the console you can see I manually changed the variable's value which caused the matrix node to update.
+> [!NOTE|label:Assumptions in the exec-flow mode]
+> - no non-terminating feedback loops (neither with exec nor with data connections)
+> - a node pushes all new output data first, before executing any exec outputs
 
-### Logs
+The data flow paradigm is the more fundamental one, and there might be changes for the exec mode in the future.
 
-Every script has logs of type `logging.Logger` of Python's builtin `logging` module. The script's logs are located at the bottom of the editor, right above the console. The nodes can access default logs via the API, and also instanciate new ones.
+While you can choose the according mode for a flow, it turned out to be a use case too to use the data flow mode in combination with some exec connections as well. This can lead to performance issues, but is quite powerful if used in the right way. For more precise definitions on the aspects of flow execution, see [ryvencore](https://leon-thomm.github.io/ryvencore/).
 
-### Source Code Preview
 
-Next to the logs is the source code area where you can inspect the source code of the last selected node (click into the text field for syntax highlighting), and also edit method implementations of single objects. That's right, you can override method implementations of single objects. All these changes are temporary (they don't get saved) and only apply on the currently selected object. It's a great way to play around or debug your components, especially when combining this with the console. For example you can just add some output to one of your nodes via the console, and then modify the update event of it to provide some additional data there via the source code preview. This is a really useful feature, however as you might suspect, modifying an object's method implementation is not exactly conventional and doesn't work in all cases. For example, when you created references somewhere else to this modified method, those references will still point to the old implementation of it.
+## Developing Nodes
 
-> [!TIP|label:How to fix this]
-> If you need to reference methods directly somewhere (for example when passing them as 'variable receiver'), you could use a workaround by, instead of passing the actual method reference, passing a lambda causing a new search for the newest version whenever the method is called, like this
-> ```python
-def retain(foo):
-    return lambda *args, **kwargs: getattr(foo.__self__, foo.__name__)(*args, **kwargs)
-> ```
-> And when referencing, for example:
-> ```python
-self.register_var_receiver('x', retain(self.my_method))
-> ```
+### Overview
 
-It usually works quite well, but there might be some bugs since the implementation in Ryven 3 hasn't been extensively tested yet.
+In Ryven, nodes are organized in *node packages*. A node package consists of a package folder (its name is the name of the package), and a file `nodes.py` where you define your node classes. Ryven automatically creates a few directories in your home directory when installing with the following structures:
 
-### Rendering Flow Images
+```
+~ (home)
+└── .ryven
+    ├── nodes
+    │   └── my_nodes_package
+    │       ├── nodes.py
+    │       └── [widgets.py]
+    └── saves
+        └── my_project.json
+```
+*files and `my_nodes_package` added for illustration purposes*
 
-You can render images of the currently displayed flow, also via the top menus. By rendering the viewport, the picture will show what's currently visible of the flow, in the exact same resolution it is currently displayed. For high res pictures render the whole scene and zoom to the top left, the zoom factor will determine the exact resolution of your image. It can take a few seconds to render high resolution images.
+Usually, you might want to put your node packages into the nodes directory above, but this is by no means a requirement, node packages are fully portable.
 
-### Save&Load
+For custom Qt widgets simply create a `widgets.py` in the same location.
 
-You can save via `ctrl+s` and choose to load a project when starting the application. To import a nodes package, you can also hit `ctrl+i`.
-
-For programming your own nodes (see below), you only need to follow the rule that all API provided features are saved and reloaded automatically, for example the current inputs and outputs, display title, as well as special actions.
-
-## Programming Nodes
-
-And there we go. Programming new nodes is at the heart of all this, you need basic Python knowledge but nothing advanced.
-
-> [!NOTE|label:Overview]
-> In Ryven, nodes are organized in *node packages*. A node package consists of a package folder (its name is the name of the package), and a file `nodes.py` where you define your node classes. Ryven comes with its own packages folder, but if you installed it via `pip` you should define another one somewhere on your file system, so your packages don't get lost when you update the Ryven installation. For additional custom widgets you create a file `widgets.py` in the same dir which has a similar structure to `nodes.py`. In `nodes.py` you define subclasses of `Node`, set basic properties by editing static class attributes and add functionality mainly through using event methods from `Node`. You can find an example package in the Example section below.
+A node is defined by its Python class. You basically subclass the `Node` class from Ryven, specify pre-defined attributes and methods and enhance it the way you like.
 
 > [!NOTE]
-> There is no requirement to have only one level of `Node` class inheritance and file locality. When packages get larger it's usually better to define your own `NodeBase` class(es), decentralize your node definitions into multiple modules, and just import them in `nodes.py`. You will specify all the exact nodes that you want to expose in `export_nodes()`, see below.
+> When packages get larger, it's usually advantegous to make use of inheritance (define your own `NodeBase` class/es) and decentralize your node definitions into multiple modules. You can just import all nodes in `nodes.py` and expose them with `export_nodes()`, see below.
 
-A node is defined by its Python class. You basically subclass the `Node` class from Ryven, specify pre-defined attributes and methods and enhance it the way you like. For example:
+Example:
 
+`nodes.py`
 ```python
+from ryven.NENV import *
+
 class MyPrintNode(Node):
     title = 'print'
     init_inputs = [
@@ -124,15 +115,41 @@ class MyPrintNode(Node):
 
     def update_event(self, inp=-1):
         print(self.input(0))
+
+export_nodes(MyPrintNode, )
 ```
 
-This simple node gets updated when data arrives at its only input, causing an update event. Then, we just print this data and that's basically it. The static attributes at the top define basic properties that equally apply on all nodes of this type (all such `print` nodes here), and there are various methods (defined in `Node`) you can reimplement to do more sophisticated stuff.
+In dataflow mode, this simple node gets updated when data arrives at its only input, causing an update event. Then, we just print this data. There are various methods you can implement to define more sophisticated behavior.
 
-### Important Methods
+### Basic Node Behavior
 
-<!-- There are a few more methods that might be important, especially when building complex 'sequential' nodes which need to correctly reconstruct their state. -->
+*The `input()`-and `set_output_val()` capabilities of nodes were already covered. This section provides some specification of the most important events.*
 
-The `place_event` is called every time the node is added to the flow. Notice that this can happen multiple times, for example when undoing a remove operation in the flow, but also when the node is first constructed and placed in the flow. The `place_event` is called *before* any incident connections are built, so it is sometimes used to trigger updates since setting outputs does not affect any other nodes.
+A node can receive a number of different update events. Understanding them is key especially for developing stateful nodes.
+
+> [!NOTE|label:De-Serialization]
+> A part of a flow can be serialized at any time to be used as template to build a new set of nodes with connections. This is essentially what happens when saving and loading a project, but it also happens when copy and pasting a part of a flow.
+
+`update_event`
+
+In dataflow mode the `update_event` is triggered whenever
+
+1. `update()` was called explicitly (then the parameter `input_called` is `-1`), or
+2. an input received new data
+
+Updates through data propagation in the flow (so data arrives through a connection) is explained in *Flow execution* above. There are a few more occasions where a node can receive updates.
+
+When a new node was added to the flow, it is not updated per-se (it can make sense to update explicitly in the `place_event`, see below). However, any input that has a widget and the flag `cause init update` set (which is the case for all `dtype` inputs, see below) will cause an update event during initialization (after ...)...
+
+TODO
+
+- 
+
+`place_event`
+
+The `place_event` is triggered whenever the node is added to the flow. Notice that this can happen multiple times, for example when undoing a remove operation in the flow, but also when the node is constructed and placed in the flow for the first time.
+
+In case the node is created as a result of deserialization, the `place_event` is triggered *before* any incident connections are built, so it is sometimes used to trigger other internal updates since setting outputs does not yet affect any other nodes.
 
 
 > [!TIP|label:Example]
@@ -141,6 +158,10 @@ class MyNode(Node):
     def place_event(self):
         self.update()
 > ```
+
+
+`remove_event()`
+
 
 Just like the `place_event`, there's a `remove_event` called every time the node is removed from the flow (this too can happen multiple times).
 
@@ -152,6 +173,9 @@ class MyNode(Node):
         self.timer.stop()
 > ```
 
+
+`view_place_event()`
+
 In contrast to the `place_event`, the `view_place_event` is called once the whole GUI of the node (including custom widgets) has initialized, which is important when using custom widgets, see below. Only do GUI related work here, as this method of  course is never called when running the node on ryven console since there does not exist any GUI then.
 
 
@@ -162,7 +186,7 @@ class MyNode(Node):
         self.main_widget().update()
 > ```
 
-#### Nodes with States
+### Nodes with States
 
 If your node has states, which means its behavior depends on the values of internal variables, to be able to reconstruct the current state when loading a project or pasting the node after copying an instance of it, use the `get_state()` and `set_state()` methods.
 
@@ -461,3 +485,62 @@ API methods: (*same as above*)
 ***
 
 For getting more examples on how to make nodes and node packages, make sure to take a look at the implementations of the node packages Ryven comes with.
+
+
+## Editor Overview
+
+*This section provides an overview over the most important features of the editor. It is not essential for developing nodes, but some parts may be useful for development.*
+
+### Flows controls
+
+The flow supports all usual actions, including undo/redo operations. You can place nodes by right-clicking and pan around by pressing and draggin with the right mouse button.
+
+> [!NOTE]
+> I would like to add sophisticated touch support, but there are Qt bugs that are not being tackled making this difficult at the moment.
+
+Notice there are different themes, simple node animations, and two performance modes, all selectable via the menu at the top or in the welcome dialog.
+
+### Integrated Console
+
+The small integrated console, located at the bottom of the editor window, simply runs a Python REPL. You can right click on a node and click *add to console* to add a reference to the node object to the console scope, so you can directly access the node's whole API from the console which is really useful for development.
+
+> [!TIP|label:Session Access]
+> The `session` object (which is basically the project) is added to the console scope automatically. You can play around with the `ryvencore-qt` API, for example try creating a new script via `session.create_script('hello there!')`. Due to the fully signals-based communication between `ryvencore` and `ryvencore-qt`, the GUI will react accordingly to most modifications you do in the console.
+
+### Script Variables
+
+The script variables, located on the right, can be modified at any time by right-clicking on them, and when you hover over one you can see its current value and data type. The values of those variables are usually accessed and changed by your nodes. The nodes API provides a method for regestering a handler function for change of a variable with a given name, and another method to unregister handlers. You could build quite sophisticated nodes this way, that automatically adapt to change of data from somewhere else.
+
+> [!TIP|label:Example]
+> In one of the example node packages Ryven comes with, there's a *Matrix* node where you can just type a few numbers into a small textedit and it creates a numpy array out of them. But you can also type in `v('')` and the name of a script variable (instead of a number) which makes the matrix node register as a receiver, so it updates and regenerates the matrix every time the value of a script variable with that name changed. You can see this in action in the big screenshot above. In the console you can see I manually changed the variable's value which caused the matrix node to update.
+
+### Logs
+
+Every script has logs of type `logging.Logger` of Python's builtin `logging` module. The script's logs are located at the bottom of the editor, right above the console. The nodes can access default logs via the API, and also instanciate new ones.
+
+### Source Code Preview
+
+Next to the logs is the source code area where you can inspect the source code of the last selected node (click into the text field for syntax highlighting), and also edit method implementations of single objects. That's right, you can override method implementations of single objects. All these changes are temporary (they don't get saved) and only apply on the currently selected object. It's a great way to play around or debug your components, especially when combining this with the console. For example you can just add some output to one of your nodes via the console, and then modify the update event of it to provide some additional data there via the source code preview. This is a really useful feature, however as you might suspect, modifying an object's method implementation is not exactly conventional and doesn't work in all cases. For example, when you created references somewhere else to this modified method, those references will still point to the old implementation of it.
+
+> [!TIP|label:How to fix this]
+> If you need to reference methods directly somewhere (for example when passing them as 'variable receiver'), you could use a workaround by, instead of passing the actual method reference, passing a lambda causing a new search for the newest version whenever the method is called, like this
+> ```python
+def retain(foo):
+    return lambda *args, **kwargs: getattr(foo.__self__, foo.__name__)(*args, **kwargs)
+> ```
+> And when referencing, for example:
+> ```python
+self.register_var_receiver('x', retain(self.my_method))
+> ```
+
+It usually works quite well, but there might be some bugs since the implementation in Ryven 3 hasn't been extensively tested yet.
+
+### Rendering Flow Images
+
+You can render images of the currently displayed flow, also via the top menus. By rendering the viewport, the picture will show what's currently visible of the flow, in the exact same resolution it is currently displayed. For high res pictures render the whole scene and zoom to the top left, the zoom factor will determine the exact resolution of your image. It can take a few seconds to render high resolution images.
+
+### Save&Load
+
+You can save via `ctrl+s` and choose to load a project when starting the application. To import a nodes package, you can also hit `ctrl+i`.
+
+For programming your own nodes (see below), you only need to follow the rule that all API provided features are saved and reloaded automatically, for example the current inputs and outputs, display title, as well as special actions.
